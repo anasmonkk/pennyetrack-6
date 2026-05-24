@@ -1,9 +1,7 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
-import { useAuth } from "@/hooks/use-auth";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Truck, MapPin, Navigation, MapPinned, Map as MapIcon } from "lucide-react";
+import { Truck, MapPin, Navigation, MapPinned, Map } from "lucide-react";
 import logo from "@/assets/logo.png";
 
 export const Route = createFileRoute("/landing")({
@@ -46,7 +44,7 @@ const features = [
     gradient: "from-[oklch(0.55_0.22_150)] via-[oklch(0.6_0.22_170)] to-[oklch(0.65_0.2_200)]",
   },
   {
-    icon: MapIcon,
+    icon: Map,
     title: "Panchayath Map",
     to: "/map/panchayath" as const,
     gradient: "from-[oklch(0.55_0.2_300)] via-[oklch(0.6_0.22_330)] to-[oklch(0.65_0.2_10)]",
@@ -54,28 +52,6 @@ const features = [
 ];
 
 function Landing() {
-  const { user, roles, loading, isAdmin } = useAuth();
-  const navigate = useNavigate();
-
-  useEffect(() => {
-    if (loading) return;
-    if (!user) {
-      navigate({ to: "/auth" });
-      return;
-    }
-    if (isAdmin) return;
-    if (roles.includes("delivery")) navigate({ to: "/delivery-partners" });
-    else navigate({ to: "/staff/pending" });
-  }, [user, roles, loading, isAdmin, navigate]);
-
-  if (loading || !user || !isAdmin) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-background px-4 text-sm text-muted-foreground">
-        Checking authentication…
-      </main>
-    );
-  }
-
   return (
     <main className="min-h-screen bg-gradient-to-b from-[oklch(0.98_0.01_240)] via-background to-[oklch(0.95_0.03_250)]">
       <nav className="sticky top-0 z-50 border-b border-border/60 bg-background/80 backdrop-blur-md">
@@ -93,9 +69,6 @@ function Landing() {
             </Button>
             <Button size="sm" asChild>
               <Link to="/auth">Get Started</Link>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/staff/login">Staff</Link>
             </Button>
           </div>
         </div>

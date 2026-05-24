@@ -1,77 +1,35 @@
 ## Goal
 
-Add a self-serve staff signup + login flow that uses **mobile number + password only** (no email, no OTP). New signups land in a "pending" queue; a super admin then approves them and assigns a role (admin or delivery staff) along with their panchayath/ward.
+On the `/landing` page, add a new feature card that opens a public, read-only Google Map showing all panchayaths that already have a saved location.
 
-## User flow
+Today, marked locations only exist behind the admin pages (`/admin/mapping/panchayath`). This makes them visible to any visitor.
 
-**Signup (`/staff/signup`)** — public page:
-- Full name
-- Mobile number (validated, normalized to `+<digits>`)
-- Panchayath (dropdown from `panchayaths`)
-- Ward (dropdown filtered by selected panchayath from `wards`)
-- Password + Repeat password (min 6, must match)
-- Submit → account created in `auth.users` with phone+password, `phone_confirm=true` (no SMS), profile + `delivery_staff` row inserted with `status='pending'`, panchayath/ward stored on a join row. No role assigned yet.
-- Success screen: "Your account is pending super admin approval."
+## Changes
 
-**Login (`/staff/login`)** — public page:
-- Mobile number + password → `supabase.auth.signInWithPassword({ phone, password })`
-- After sign-in:
-  - If no role yet → show "Pending approval" screen with sign-out button.
-  - If `delivery` role → redirect to delivery dashboard (or landing).
-  - If `admin`/`super_admin` role → redirect to `/admin`.
+### 1. New public route: `src/routes/map.panchayath.tsx`
+- Path: `/map/panchayath`
+- Loads the Google Maps API key from `app_settings` via the existing `useGoogleMapsKey` hook.
+- Queries `panchayaths` (id, name, district_id, latitude, longitude) where `latitude` and `longitude` are not null.
+- Renders a full-height Google Map with one marker per panchayath. Marker tooltip = panchayath name. Map auto-fits bounds to all markers; falls back to Kerala default if none.
+- Read-only: no click-to-place, no edit controls, no auth required.
+- Uses the same `useGoogleMaps` loader hook as the admin picker.
+- Hydrates instantly from the IndexedDB cache (`loadCachedPoints("panchayath")`) on mount, then refreshes from Supabase.
+- Empty state: "No panchayath locations have been marked yet."
+- Missing key state: "Map is not configured yet. Ask an admin to set the Google Maps API key."
 
-**Super admin approval (`/admin/staff` — extend existing page):**
-- New "Pending approvals" section listing `delivery_staff` rows with `status='pending'`.
-- For each row: show name, phone, requested panchayath/ward, signup date.
-- Actions: **Approve as Delivery**, **Approve as Admin**, **Reject**.
-  - Approve → insert into `user_roles` (`delivery` or `admin`), set `status='active'`, keep panchayath/ward assignments (already linked via `delivery_staff_panchayaths` / `delivery_staff_wards`).
-  - Reject → set `status='rejected'` (do not delete auth user; super admin can clean up separately).
+### 2. New card on `/landing`
+- Add a 5th card titled **"Panchayath Map"** to the `features` array in `src/routes/landing.tsx`.
+- Icon: `Map` (lucide-react).
+- Links to `/map/panchayath`.
+- Reuses an existing gradient style for visual consistency.
 
-## Database changes (migration)
+## Notes
 
-Existing `delivery_staff.status` is already `text default 'active'`. We will:
-1. Allow `'pending'` and `'rejected'` as valid statuses (no constraint to change — it's free-text today).
-2. No schema change to `user_roles` — signup simply doesn't create a row there; approval does.
-3. The `handle_new_user` trigger currently auto-inserts `('delivery')` into `user_roles` and writes to `profiles` using `email`. We need to update it so phone-only signups don't auto-grant the `delivery` role and don't require email:
-   - Change trigger to insert profile with whatever's available (email or phone), and **only** insert a `user_roles` row when `raw_user_meta_data->>'auto_role'` is set (legacy path). For new staff signups, no role is auto-granted.
+- No DB changes; reuses existing `panchayaths.latitude/longitude` columns and `app_settings.google_maps_api_key`.
+- Public RLS on `panchayaths` is `authenticated`-only today. If we want this map fully public (no login), we'll need to either (a) add a public SELECT policy filtered to rows with non-null lat/lng, or (b) expose the data through a `SECURITY DEFINER` SQL function similar to `get_public_delivery_partners`. **Assumption: option (a)** — add a permissive public read policy limited to marked rows. Tell me if you'd rather keep it auth-only and I'll skip that migration.
+- Google Maps key is read from `app_settings` (admin-only RLS). For an unauthenticated viewer we'd need a small change: a public `get_public_google_maps_key()` SQL function, or move the key to an `import.meta.env.VITE_*` value. **Assumption: add a `SECURITY DEFINER` function** that returns just that one key so the public viewer page can load the map. Tell me if you'd prefer the env-var route or want to keep the map admin-only.
 
-## Server-side (TanStack server functions, not edge functions)
+## Out of scope
 
-New file `src/lib/staff-signup.functions.ts`:
-- `staffSignup({ full_name, phone, password, panchayath_id, ward_id })`
-  - Uses `supabaseAdmin` to:
-    1. `auth.admin.createUser({ phone, password, phone_confirm: true, user_metadata: { full_name } })`
-    2. Upsert `profiles` (id, full_name, phone)
-    3. Insert into `delivery_staff` (user_id, full_name, phone, status='pending')
-    4. Insert into `delivery_staff_panchayaths` and `delivery_staff_wards`
-  - Validates with Zod (name 1–120, phone `/^\+?[0-9]{6,20}$/`, password ≥ 6, valid UUIDs, password === repeat).
-  - Returns `{ ok: true }` or `{ error }`.
-
-New file `src/lib/staff-approval.functions.ts` (protected by `requireSupabaseAuth` + super_admin check inside handler):
-- `listPendingStaff()` → rows from `delivery_staff` where `status='pending'` joined with their panchayath/ward names.
-- `approveStaff({ staff_id, role: 'admin' | 'delivery' })` → insert `user_roles`, set `status='active'`.
-- `rejectStaff({ staff_id })` → set `status='rejected'`.
-
-## Frontend changes
-
-- **New routes**
-  - `src/routes/staff.signup.tsx` — form with name / phone / panchayath select / ward select (loads wards for chosen panchayath) / password / repeat password.
-  - `src/routes/staff.login.tsx` — phone + password form, calls `supabase.auth.signInWithPassword({ phone, password })`.
-  - `src/routes/staff.pending.tsx` — shown to signed-in users with no role.
-- **Existing routes**
-  - `src/routes/admin.staff.tsx` — add "Pending Approvals" card above existing staff list with the three actions.
-  - `src/routes/landing.tsx` (and/or auth page) — add a "Staff sign in / sign up" entry point.
-  - `src/hooks/use-auth.tsx` — after sign-in, if `roles` is empty and a `delivery_staff` row exists with status≠active, route the user to `/staff/pending`.
-
-## Security notes
-
-- Self-signup must NOT grant any role automatically — verified by the trigger change above and by the server function not inserting into `user_roles`.
-- All admin/role mutations go through server functions that re-check `super_admin` via `has_role`.
-- Phone is normalized server-side; duplicate phone returns a clean error.
-- Mobile-only auth means email-based password reset doesn't apply; a "forgot password" flow can be added later as a super-admin reset action.
-
-## Out of scope (ask if needed)
-
-- SMS OTP verification of the phone number (we use `phone_confirm=true` — phone is trusted on signup, like the existing admin-create flow).
-- Password reset for staff users.
-- Editing a staff member's requested panchayath/ward during approval (super admin can change it later from the existing staff admin UI).
+- Ward map viewer (can be added the same way later).
+- Clustering, search, polygons, directions.
